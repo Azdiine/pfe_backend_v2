@@ -1,0 +1,20 @@
+CREATE TABLE recipes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    title VARCHAR(255) NOT NULL,
+    category VARCHAR(50),
+    cuisine_type VARCHAR(50),
+    prep_time_min INTEGER,
+    cook_time_min INTEGER,
+    difficulty VARCHAR(20),
+    servings INTEGER,
+    calories DECIMAL(7,2),
+    proteins_g DECIMAL(7,2),
+    carbs_g DECIMAL(7,2),
+    fats_g DECIMAL(7,2),
+    ingredients JSONB,
+    steps JSONB,
+    tags TEXT[],
+    is_ai_generated BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+);

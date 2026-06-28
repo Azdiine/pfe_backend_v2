@@ -1,0 +1,21 @@
+CREATE TABLE daily_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    log_date DATE NOT NULL,
+    calories_in DECIMAL(7,2),
+    proteins_g DECIMAL(7,2),
+    carbs_g DECIMAL(7,2),
+    fats_g DECIMAL(7,2),
+    fiber_g DECIMAL(7,2),
+    water_ml INTEGER,
+    calories_burned DECIMAL(7,2),
+    activity_type VARCHAR(100),
+    activity_minutes INTEGER,
+    weight_kg DECIMAL(5,2),
+    body_fat_percent DECIMAL(5,2),
+    notes TEXT,
+    mood VARCHAR(20),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user_id, log_date)
+);

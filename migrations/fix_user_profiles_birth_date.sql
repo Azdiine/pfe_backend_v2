@@ -1,0 +1,5 @@
+ALTER TABLE user_profiles
+ADD COLUMN IF NOT EXISTS birth_date DATE;
+
+ALTER TABLE user_profiles
+DROP COLUMN IF EXISTS age;

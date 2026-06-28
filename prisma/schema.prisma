@@ -1,0 +1,262 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enum ────────────────────────────────────────────────────────────────────
+
+enum SubscriptionPeriod {
+  monthly
+  yearly
+  lifetime
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  name         String?
+  passwordHash String    @map("password_hash")
+  isVerified   Boolean   @default(false) @map("is_verified")
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastLoginAt  DateTime? @map("last_login_at")
+
+  profile           UserProfile?
+  fridgeItems       FridgeItem[]
+  recipes           Recipe[]
+  favoriteRecipes   FavoriteRecipe[]
+  dailyLogs         DailyLog[]
+  subscriptions     UserSubscription[]
+  userSessions      UserSession[]
+  notifications     Notification[]
+  chatMessages      ChatMessage[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  id               String   @id @default(uuid())
+  userId           String   @unique @map("user_id")
+  name             String?
+  birthDate        DateTime? @map("birth_date") @db.Date
+  gender           String?
+  weightKg         Decimal? @map("weight_kg") @db.Decimal(5, 2)
+  heightCm         Decimal? @map("height_cm") @db.Decimal(5, 2)
+  goal             String?
+  activityLevel    String?  @map("activity_level")
+  dietType         String?  @map("diet_type")
+  allergies        String[]
+  healthConditions String[] @map("health_conditions")
+  cuisinePrefs     String[] @map("cuisine_prefs")
+  targetCalories   Int?     @map("target_calories")
+  targetWeightKg   Decimal? @map("target_weight_kg") @db.Decimal(5, 2)
+  onboardingDone   Boolean  @default(false) @map("onboarding_done")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model Product {
+  id        String   @id @default(uuid())
+  barcode   String?  @unique
+  name      String
+  brand     String?
+  category  String?
+  imageUrl  String?  @map("image_url")
+  calories  Decimal? @db.Decimal(7, 2)
+  proteinsG Decimal? @map("proteins_g") @db.Decimal(7, 2)
+  carbsG    Decimal? @map("carbs_g") @db.Decimal(7, 2)
+  fatsG     Decimal? @map("fats_g") @db.Decimal(7, 2)
+  fiberG    Decimal? @map("fiber_g") @db.Decimal(7, 2)
+  sugarG    Decimal? @map("sugar_g") @db.Decimal(7, 2)
+  saltG     Decimal? @map("salt_g") @db.Decimal(7, 2)
+  source    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  fridgeItems FridgeItem[]
+
+  @@map("products")
+}
+
+model FridgeItem {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  productId       String?   @map("product_id")
+  customName      String?   @map("custom_name")
+  emoji           String?
+  quantity        String?
+  unit            String?
+  shelfLocation   String?   @default("middle_shelf") @map("shelf_location")
+  expiryDate      DateTime? @map("expiry_date") @db.Date
+  daysUntilExpiry Int?      @map("days_until_expiry")
+  addedAt         DateTime  @default(now()) @map("added_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@map("fridge_items")
+}
+
+model Recipe {
+  id            String   @id @default(uuid())
+  sourceUserId  String?  @map("source_user_id")
+  title         String
+  category      String?
+  cuisineType   String?  @map("cuisine_type")
+  prepTimeMin   Int?     @map("prep_time_min")
+  cookTimeMin   Int?     @map("cook_time_min")
+  difficulty    String?
+  servings      Int?
+  calories      Decimal? @db.Decimal(7, 2)
+  proteinsG     Decimal? @map("proteins_g") @db.Decimal(7, 2)
+  carbsG        Decimal? @map("carbs_g") @db.Decimal(7, 2)
+  fatsG         Decimal? @map("fats_g") @db.Decimal(7, 2)
+  ingredients   Json?
+  steps         Json?
+  tags          String[]
+  isAiGenerated Boolean  @default(false) @map("is_ai_generated")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  sourceUser      User?            @relation(fields: [sourceUserId], references: [id], onDelete: SetNull)
+  favoriteRecipes FavoriteRecipe[]
+
+  @@map("recipes")
+}
+
+model FavoriteRecipe {
+  id       String   @id @default(uuid())
+  userId   String   @map("user_id")
+  recipeId String   @map("recipe_id")
+  savedAt  DateTime @default(now()) @map("saved_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, recipeId])
+  @@map("favorite_recipes")
+}
+
+model DailyLog {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  logDate         DateTime @map("log_date") @db.Date
+  caloriesIn      Decimal? @map("calories_in") @db.Decimal(7, 2)
+  proteinsG       Decimal? @map("proteins_g") @db.Decimal(7, 2)
+  carbsG          Decimal? @map("carbs_g") @db.Decimal(7, 2)
+  fatsG           Decimal? @map("fats_g") @db.Decimal(7, 2)
+  fiberG          Decimal? @map("fiber_g") @db.Decimal(7, 2)
+  waterMl         Int?     @map("water_ml")
+  caloriesBurned  Decimal? @map("calories_burned") @db.Decimal(7, 2)
+  activityType    String?  @map("activity_type")
+  activityMinutes Int?     @map("activity_minutes")
+  weightKg        Decimal? @map("weight_kg") @db.Decimal(5, 2)
+  bodyFatPercent  Decimal? @map("body_fat_percent") @db.Decimal(5, 2)
+  notes           String?
+  mood            String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, logDate])
+  @@map("daily_logs")
+}
+
+model SubscriptionPlan {
+  id          String             @id @default(uuid())
+  name        String
+  description String?
+  price       Decimal            @db.Decimal(8, 2)
+  currency    String             @default("EUR")
+  period      SubscriptionPeriod
+  features    String[]
+  isAvailable Boolean            @default(true) @map("is_available")
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  userSubscriptions UserSubscription[]
+
+  @@map("subscription_plans")
+}
+
+model UserSubscription {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  planId        String    @map("plan_id")
+  isActive      Boolean   @default(false) @map("is_active")
+  paymentMethod String?   @map("payment_method")
+  paymentRef    String?   @map("payment_ref")
+  startedAt     DateTime  @default(now()) @map("started_at")
+  expiresAt     DateTime? @map("expires_at")
+  cancelledAt   DateTime? @map("cancelled_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  user User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  @@map("user_subscriptions")
+}
+
+model UserSession {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  refreshToken String   @map("refresh_token")
+  ip           String?  @map("ip")
+  userAgent    String?  @map("user_agent")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  type      String?
+  title     String?
+  message   String?
+  isRead    Boolean  @default(false) @map("is_read")
+  actionUrl String?  @map("action_url")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model ChatMessage {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  content    String
+  isBot      Boolean  @default(false) @map("is_bot")
+  modelUsed  String?  @map("model_used")
+  tokensUsed Int?     @map("tokens_used")
+  sessionId  String?  @map("session_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("chat_messages")
+}
+
+model OtpCode {
+  id           String   @id @default(uuid())
+  email        String
+  name         String?
+  passwordHash String   @map("password_hash")
+  code         String
+  expiresAt    DateTime @map("expires_at")
+  used         Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("otp_codes")
+}
