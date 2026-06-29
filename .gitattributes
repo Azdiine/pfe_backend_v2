@@ -1,2 +1,0 @@
-recommendation_data/*.bin filter=lfs diff=lfs merge=lfs -text
-recommendation_data/*.pkl filter=lfs diff=lfs merge=lfs -text
