@@ -42,4 +42,38 @@ const refreshValidation = [
     .notEmpty().withMessage('Refresh token is required'),
 ];
 
-module.exports = { registerValidation, loginValidation, verifyOtpValidation, resendOtpValidation, refreshValidation };
+const changePasswordValidation = [
+  body('currentPassword')
+    .notEmpty().withMessage('Current password is required'),
+  body('newPassword')
+    .isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+];
+
+const forgotPasswordValidation = [
+  body('email')
+    .isEmail().withMessage('Please provide a valid email')
+    .normalizeEmail(),
+];
+
+const resetPasswordValidation = [
+  body('email')
+    .isEmail().withMessage('Please provide a valid email')
+    .normalizeEmail(),
+  body('code')
+    .trim()
+    .isLength({ min: 6, max: 6 }).withMessage('OTP code must be 6 digits')
+    .isNumeric().withMessage('OTP code must contain only numbers'),
+  body('newPassword')
+    .isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+];
+
+module.exports = {
+  registerValidation,
+  loginValidation,
+  verifyOtpValidation,
+  resendOtpValidation,
+  refreshValidation,
+  changePasswordValidation,
+  forgotPasswordValidation,
+  resetPasswordValidation,
+};

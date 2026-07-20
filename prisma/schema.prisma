@@ -14,6 +14,13 @@ enum SubscriptionPeriod {
   lifetime
 }
 
+enum MealType {
+  breakfast
+  lunch
+  dinner
+  snack
+}
+
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 model User {
@@ -31,6 +38,7 @@ model User {
   recipes           Recipe[]
   favoriteRecipes   FavoriteRecipe[]
   dailyLogs         DailyLog[]
+  mealEntries       MealEntry[]
   subscriptions     UserSubscription[]
   userSessions      UserSession[]
   notifications     Notification[]
@@ -55,6 +63,7 @@ model UserProfile {
   cuisinePrefs     String[] @map("cuisine_prefs")
   targetCalories   Int?     @map("target_calories")
   targetWeightKg   Decimal? @map("target_weight_kg") @db.Decimal(5, 2)
+  avatarUrl        String?  @map("avatar_url")
   onboardingDone   Boolean  @default(false) @map("onboarding_done")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -101,6 +110,7 @@ model FridgeItem {
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 
+  @@index([userId])
   @@map("fridge_items")
 }
 
@@ -169,6 +179,28 @@ model DailyLog {
   @@map("daily_logs")
 }
 
+// Un repas individuel du journal : permet le détail par type de repas
+// (petit-déjeuner / déjeuner / dîner / collation) et la suppression unitaire.
+// Les totaux du jour = somme des MealEntry + valeurs héritées de DailyLog.
+model MealEntry {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  logDate   DateTime @map("log_date") @db.Date
+  mealType  MealType @map("meal_type")
+  name      String?
+  calories  Decimal? @db.Decimal(7, 2)
+  proteinsG Decimal? @map("proteins_g") @db.Decimal(7, 2)
+  carbsG    Decimal? @map("carbs_g") @db.Decimal(7, 2)
+  fatsG     Decimal? @map("fats_g") @db.Decimal(7, 2)
+  source    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, logDate])
+  @@map("meal_entries")
+}
+
 model SubscriptionPlan {
   id          String             @id @default(uuid())
   name        String
@@ -215,6 +247,8 @@ model UserSession {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+  @@index([refreshToken])
   @@map("user_sessions")
 }
 
@@ -230,6 +264,7 @@ model Notification {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
   @@map("notifications")
 }
 
@@ -245,6 +280,7 @@ model ChatMessage {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, sessionId, createdAt])
   @@map("chat_messages")
 }
 
@@ -252,11 +288,18 @@ model OtpCode {
   id           String   @id @default(uuid())
   email        String
   name         String?
-  passwordHash String   @map("password_hash")
+  // Nullable : les OTP de réinitialisation de mot de passe n'en ont pas
+  passwordHash String?  @map("password_hash")
   code         String
+  // 'register' (création de compte) ou 'reset' (mot de passe oublié)
+  purpose      String   @default("register")
+  // Nombre d'essais ratés : le code est invalidé au bout de 5
+  attempts     Int      @default(0)
   expiresAt    DateTime @map("expires_at")
   used         Boolean  @default(false)
   createdAt    DateTime @default(now()) @map("created_at")
 
+  @@index([email])
+  @@index([expiresAt])
   @@map("otp_codes")
 }

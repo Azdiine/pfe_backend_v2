@@ -11,6 +11,12 @@ const authMiddleware = require('../../middlewares/auth.middleware');
 router.get('/health', recommendController.healthCheck);
 
 /**
+ * GET /api/recommend/daily
+ * Recipes of the day (requires auth)
+ */
+router.get('/daily', authMiddleware, recommendController.dailyRecipes);
+
+/**
  * POST /api/recommend
  * Get recommendations by ingredients (requires auth)
  */

@@ -81,6 +81,83 @@ const resendOtp = async (req, res, next) => {
   }
 };
 
+const logout = async (req, res, next) => {
+  try {
+    const { refreshToken } = req.body;
+    const result = await authService.logout(req.user.id, refreshToken);
+    return success(res, result, 'Logged out');
+  } catch (err) {
+    if (err.statusCode) {
+      return error(res, err.message, err.statusCode);
+    }
+    next(err);
+  }
+};
+
+const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const result = await authService.changePassword(req.user.id, currentPassword, newPassword);
+    return success(res, result, 'Password changed');
+  } catch (err) {
+    if (err.statusCode) {
+      return error(res, err.message, err.statusCode);
+    }
+    next(err);
+  }
+};
+
+const forgotPassword = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const result = await authService.forgotPassword(email);
+    return success(res, result, 'Reset code sent if the email exists');
+  } catch (err) {
+    if (err.statusCode) {
+      return error(res, err.message, err.statusCode);
+    }
+    next(err);
+  }
+};
+
+const resetPassword = async (req, res, next) => {
+  try {
+    const { email, code, newPassword } = req.body;
+    const result = await authService.resetPassword(email, code, newPassword);
+    return success(res, result, 'Password reset');
+  } catch (err) {
+    if (err.statusCode) {
+      return error(res, err.message, err.statusCode);
+    }
+    next(err);
+  }
+};
+
+const listSessions = async (req, res, next) => {
+  try {
+    const { refreshToken } = req.body;
+    const sessions = await authService.listSessions(req.user.id, refreshToken);
+    return success(res, sessions, 'Sessions loaded');
+  } catch (err) {
+    if (err.statusCode) {
+      return error(res, err.message, err.statusCode);
+    }
+    next(err);
+  }
+};
+
+const revokeSession = async (req, res, next) => {
+  try {
+    const result = await authService.revokeSession(req.user.id, req.params.id);
+    return success(res, result, 'Session revoked');
+  } catch (err) {
+    if (err.statusCode) {
+      return error(res, err.message, err.statusCode);
+    }
+    next(err);
+  }
+};
+
 const googleAuth = async (req, res, next) => {
   try {
     const { idToken, tokenId, credential } = req.body;
@@ -98,4 +175,18 @@ const googleAuth = async (req, res, next) => {
   }
 };
 
-module.exports = { register, login, getMe, refresh, verifyOtp, resendOtp, googleAuth };
+module.exports = {
+  register,
+  login,
+  getMe,
+  refresh,
+  verifyOtp,
+  resendOtp,
+  googleAuth,
+  logout,
+  changePassword,
+  forgotPassword,
+  resetPassword,
+  listSessions,
+  revokeSession,
+};

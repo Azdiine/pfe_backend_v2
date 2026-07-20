@@ -1,12 +1,57 @@
 const prisma = require('../../config/prisma');
 const { hashPassword, comparePassword } = require('../../utils/hash');
-const { generateToken, generateRefreshToken, verifyToken } = require('../../utils/jwt');
-const { sendOtpEmail } = require('../../utils/email');
+const { generateToken, generateRefreshToken, verifyRefreshToken } = require('../../utils/jwt');
+const { sendOtpEmail, sendPasswordResetEmail } = require('../../utils/email');
 const crypto = require('crypto');
 const { OAuth2Client } = require('google-auth-library');
+const validator = require('validator');
 
 // Generate 6-digit OTP
 const generateOtp = () => crypto.randomInt(100000, 999999).toString();
+
+// Un code OTP est invalidé après 5 essais ratés (empêche le brute force
+// du code à 6 chiffres même sous le radar du rate limiting par IP)
+const OTP_MAX_ATTEMPTS = 5;
+
+// Vérifie un code OTP (par usage : 'register' ou 'reset') et le consomme.
+// Chaque échec incrémente le compteur ; au 5e, le code est définitivement brûlé.
+const findAndConsumeOtp = async (email, code, purpose) => {
+  const otpRecord = await prisma.otpCode.findFirst({
+    where: { email, purpose, used: false, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (!otpRecord) {
+    throw { statusCode: 400, message: 'Invalid or expired OTP code' };
+  }
+
+  if (otpRecord.code !== code) {
+    const updated = await prisma.otpCode.update({
+      where: { id: otpRecord.id },
+      data: { attempts: { increment: 1 } },
+    });
+    if (updated.attempts >= OTP_MAX_ATTEMPTS) {
+      await prisma.otpCode.update({
+        where: { id: otpRecord.id },
+        data: { used: true },
+      });
+      throw { statusCode: 429, message: 'Too many attempts. Request a new code.' };
+    }
+    throw { statusCode: 400, message: 'Invalid or expired OTP code' };
+  }
+
+  await prisma.otpCode.update({ where: { id: otpRecord.id }, data: { used: true } });
+  return otpRecord;
+};
+
+// SHA-256 (not bcrypt) for refresh tokens: bcrypt truncates its input at
+// 72 bytes and all JWT refresh tokens of a given user share their first
+// 72 characters (header + start of payload), so bcrypt made every token
+// of a user match every session — rotation/revocation had no effect.
+// SHA-256 is deterministic, so the session can also be found by direct
+// indexed lookup instead of comparing against every session of the user.
+const hashRefreshToken = (token) =>
+  crypto.createHash('sha256').update(token).digest('hex');
 
 const parseExpiryToMs = (expiry) => {
   if (!expiry) return 0;
@@ -19,12 +64,15 @@ const parseExpiryToMs = (expiry) => {
 };
 
 const createSession = async (userId, refreshToken) => {
-  const refreshTokenHash = await hashPassword(refreshToken);
   const expiresAt = new Date(Date.now() + parseExpiryToMs(process.env.JWT_REFRESH_EXPIRES_IN || '30d'));
+  // Opportunistic cleanup so expired sessions don't pile up forever
+  await prisma.userSession.deleteMany({
+    where: { userId, expiresAt: { lt: new Date() } },
+  });
   return prisma.userSession.create({
     data: {
       userId,
-      refreshToken: refreshTokenHash,
+      refreshToken: hashRefreshToken(refreshToken),
       expiresAt,
     },
   });
@@ -33,7 +81,7 @@ const createSession = async (userId, refreshToken) => {
 const findValidRefreshSession = async (refreshToken) => {
   let payload;
   try {
-    payload = verifyToken(refreshToken);
+    payload = verifyRefreshToken(refreshToken);
   } catch (err) {
     throw { statusCode: 401, message: 'Invalid refresh token' };
   }
@@ -42,27 +90,26 @@ const findValidRefreshSession = async (refreshToken) => {
     throw { statusCode: 401, message: 'Invalid refresh token payload' };
   }
 
-  const sessions = await prisma.userSession.findMany({ where: { userId: payload.id } });
+  const session = await prisma.userSession.findFirst({
+    where: {
+      userId: payload.id,
+      refreshToken: hashRefreshToken(refreshToken),
+      expiresAt: { gt: new Date() },
+    },
+  });
 
-  for (const session of sessions) {
-    if (session.expiresAt < new Date()) {
-      continue;
-    }
-    const match = await comparePassword(refreshToken, session.refreshToken);
-    if (match) {
-      return { session, userId: payload.id };
-    }
+  if (!session) {
+    throw { statusCode: 401, message: 'Refresh token not valid or expired' };
   }
 
-  throw { statusCode: 401, message: 'Refresh token not valid or expired' };
+  return { session, userId: payload.id };
 };
 
 const rotateSessionRefreshToken = async (session, newRefreshToken) => {
-  const refreshTokenHash = await hashPassword(newRefreshToken);
   const expiresAt = new Date(Date.now() + parseExpiryToMs(process.env.JWT_REFRESH_EXPIRES_IN || '30d'));
   return prisma.userSession.update({
     where: { id: session.id },
-    data: { refreshToken: refreshTokenHash, expiresAt },
+    data: { refreshToken: hashRefreshToken(newRefreshToken), expiresAt },
   });
 };
 
@@ -72,6 +119,10 @@ const register = async (email, password, name) => {
   if (existingUser) {
     throw { statusCode: 409, message: 'Email already registered' };
   }
+
+  // Opportunistic cleanup: expired OTP rows are useless (they hold a
+  // password hash, no reason to keep them around)
+  await prisma.otpCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
 
   // Invalidate any previous pending OTPs for this email
   await prisma.otpCode.updateMany({
@@ -104,29 +155,13 @@ const register = async (email, password, name) => {
 
 // Verify OTP: NOW create the user + profile
 const verifyOtp = async (email, code) => {
-  const otpRecord = await prisma.otpCode.findFirst({
-    where: {
-      email,
-      code,
-      used: false,
-      expiresAt: { gt: new Date() },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
-
-  if (!otpRecord) {
-    throw { statusCode: 400, message: 'Invalid or expired OTP code' };
-  }
-
   // Check if user was already created (double submit)
   const existingUser = await prisma.user.findUnique({ where: { email } });
   if (existingUser) {
-    await prisma.otpCode.update({ where: { id: otpRecord.id }, data: { used: true } });
     throw { statusCode: 409, message: 'Account already exists' };
   }
 
-  // Mark OTP as used
-  await prisma.otpCode.update({ where: { id: otpRecord.id }, data: { used: true } });
+  const otpRecord = await findAndConsumeOtp(email, code, 'register');
 
   // NOW create the user + profile
   const user = await prisma.user.create({
@@ -285,6 +320,112 @@ const refreshUserToken = async (refreshToken) => {
   return { token, refreshToken: newRefreshToken };
 };
 
+// Change password (authenticated). All sessions are revoked and a fresh
+// token pair is issued so the current device stays logged in.
+const changePassword = async (userId, currentPassword, newPassword) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw { statusCode: 404, message: 'User not found' };
+  }
+
+  const isMatch = await comparePassword(currentPassword, user.passwordHash);
+  if (!isMatch) {
+    throw { statusCode: 401, message: 'Current password is incorrect' };
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await prisma.user.update({ where: { id: userId }, data: { passwordHash } });
+  await prisma.userSession.deleteMany({ where: { userId } });
+
+  const token = generateToken({ id: user.id, email: user.email });
+  const refreshToken = generateRefreshToken({ id: user.id });
+  await createSession(user.id, refreshToken);
+
+  return { token, refreshToken };
+};
+
+// Forgot password: send a reset OTP. The response is identical whether the
+// email exists or not (no account enumeration).
+const forgotPassword = async (email) => {
+  const user = await prisma.user.findUnique({ where: { email } });
+
+  if (user && user.isActive) {
+    await prisma.otpCode.updateMany({
+      where: { email, purpose: 'reset', used: false },
+      data: { used: true },
+    });
+
+    const code = generateOtp();
+    const expiryMin = Number(process.env.OTP_EXPIRY_MINUTES) || 10;
+    await prisma.otpCode.create({
+      data: {
+        email,
+        purpose: 'reset',
+        code,
+        expiresAt: new Date(Date.now() + expiryMin * 60 * 1000),
+      },
+    });
+
+    await sendPasswordResetEmail(email, code);
+  }
+
+  return { message: 'If this email exists, a reset code has been sent' };
+};
+
+// Reset password with the emailed OTP. Revokes every session.
+const resetPassword = async (email, code, newPassword) => {
+  await findAndConsumeOtp(email, code, 'reset');
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    throw { statusCode: 400, message: 'Invalid or expired OTP code' };
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+  await prisma.userSession.deleteMany({ where: { userId: user.id } });
+
+  return { message: 'Password reset successfully' };
+};
+
+// Active sessions of the user. The caller may pass its refresh token so its
+// own session can be flagged (isCurrent) in the list.
+const listSessions = async (userId, currentRefreshToken) => {
+  const currentHash = currentRefreshToken ? hashRefreshToken(currentRefreshToken) : null;
+  const sessions = await prisma.userSession.findMany({
+    where: { userId, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return sessions.map((s) => ({
+    id: s.id,
+    createdAt: s.createdAt,
+    lastRefreshedAt: s.updatedAt,
+    expiresAt: s.expiresAt,
+    isCurrent: currentHash != null && s.refreshToken === currentHash,
+  }));
+};
+
+const revokeSession = async (userId, sessionId) => {
+  const { count } = await prisma.userSession.deleteMany({
+    where: { id: sessionId, userId },
+  });
+  if (count === 0) {
+    throw { statusCode: 404, message: 'Session not found' };
+  }
+  return { revoked: count };
+};
+
+// Logout: revoke the session bound to this refresh token,
+// or every session of the user when no token is provided (global logout)
+const logout = async (userId, refreshToken) => {
+  const where = refreshToken
+    ? { userId, refreshToken: hashRefreshToken(refreshToken) }
+    : { userId };
+  const { count } = await prisma.userSession.deleteMany({ where });
+  return { revoked: count };
+};
+
 // Google OAuth 2.0: verify token, login existing user or create new user directly
 const googleAuth = async (idToken) => {
   const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -308,10 +449,14 @@ const googleAuth = async (idToken) => {
     throw { statusCode: 401, message: 'Invalid Google token payload' };
   }
 
-  const { email, name, email_verified } = payload;
+  const { email: rawEmail, name, email_verified, picture } = payload;
   if (!email_verified) {
     throw { statusCode: 400, message: 'Google email not verified' };
   }
+
+  // Same normalization as the express-validator chains (lowercase, gmail dots
+  // stripped) so Google sign-in and email/password resolve to the same account
+  const email = validator.normalizeEmail(rawEmail) || rawEmail.toLowerCase();
 
   // Check if user already exists
   const existingUser = await prisma.user.findUnique({
@@ -328,6 +473,15 @@ const googleAuth = async (idToken) => {
       where: { id: existingUser.id },
       data: { lastLoginAt: new Date() },
     });
+
+    // Refresh the Google profile photo at every login
+    if (picture) {
+      await prisma.userProfile.upsert({
+        where: { userId: existingUser.id },
+        update: { avatarUrl: picture },
+        create: { userId: existingUser.id, avatarUrl: picture },
+      });
+    }
 
     const token = generateToken({ id: existingUser.id, email: existingUser.email });
     const refreshToken = generateRefreshToken({ id: existingUser.id });
@@ -357,7 +511,11 @@ const googleAuth = async (idToken) => {
       passwordHash,
       isVerified: true,
       profile: {
-        create: { name: name || '', onboardingDone: false },
+        create: {
+          name: name || '',
+          avatarUrl: picture || null,
+          onboardingDone: false,
+        },
       },
     },
     include: { profile: true },
@@ -380,4 +538,18 @@ const googleAuth = async (idToken) => {
   };
 };
 
-module.exports = { register, login, getMe, refreshUserToken, verifyOtp, resendOtp, googleAuth };
+module.exports = {
+  register,
+  login,
+  getMe,
+  refreshUserToken,
+  verifyOtp,
+  resendOtp,
+  googleAuth,
+  logout,
+  changePassword,
+  forgotPassword,
+  resetPassword,
+  listSessions,
+  revokeSession,
+};

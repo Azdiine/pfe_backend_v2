@@ -41,6 +41,26 @@ async function recommendByBarcode(req, res) {
 }
 
 /**
+ * GET /api/recommend/daily?count=6
+ * Recipes of the day (deterministic per date)
+ */
+async function dailyRecipes(req, res) {
+  try {
+    const count = parseInt(req.query.count) || 6;
+    const seed = req.query.seed || null;
+    const result = await recommendService.getDailyRecipes(count, seed);
+
+    return success(res, {
+      date: result.date,
+      recipes: result.recipes
+    }, 'Daily recipes retrieved successfully');
+  } catch (err) {
+    console.error('Error in dailyRecipes:', err);
+    return error(res, err.message || 'Failed to get daily recipes', 500);
+  }
+}
+
+/**
  * GET /api/recommend/health
  * Check if recommendation service is available
  */
@@ -64,5 +84,6 @@ async function healthCheck(req, res) {
 module.exports = {
   recommendByIngredients,
   recommendByBarcode,
+  dailyRecipes,
   healthCheck
 };

@@ -9,7 +9,9 @@ const OPEN_FOOD_FACTS_API = 'https://world.openfoodfacts.org/api/v0/product';
  */
 async function getProductByBarcode(barcode) {
   try {
-    const response = await axios.get(`${OPEN_FOOD_FACTS_API}/${barcode}.json`);
+    const response = await axios.get(`${OPEN_FOOD_FACTS_API}/${encodeURIComponent(barcode)}.json`, {
+      timeout: 10000,
+    });
     
     if (response.data.status === 0 || !response.data.product) {
       return {
@@ -76,6 +78,27 @@ async function getRecommendations(ingredients, topK = 5) {
 }
 
 /**
+ * Recipes of the day from the Flask service (deterministic per date)
+ */
+async function getDailyRecipes(count = 6, seed = null) {
+  try {
+    const response = await axios.get(`${FLASK_SERVICE_URL}/daily`, {
+      params: { count, ...(seed ? { seed } : {}) },
+      timeout: 30000
+    });
+
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Daily recipes failed');
+    }
+
+    return response.data;
+  } catch (error) {
+    console.error('Error calling Flask service:', error.message);
+    throw new Error(`Recommendation service error: ${error.message}`);
+  }
+}
+
+/**
  * Get recommendations by ingredients (direct)
  */
 async function recommendByIngredients(ingredients, topK = 5) {
@@ -132,6 +155,7 @@ async function recommendByBarcode(barcode, topK = 5) {
 module.exports = {
   getProductByBarcode,
   getRecommendations,
+  getDailyRecipes,
   recommendByIngredients,
   recommendByBarcode
 };

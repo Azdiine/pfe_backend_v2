@@ -142,6 +142,42 @@ def _parse_nutrition(nutrition_raw, calories_raw):
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
+def _image_url(name: str, width=400, height=300) -> str:
+    """Realistic food photo URL for any dish name (pollinations.ai, free, no key).
+    Deterministic seed per name so the same dish always gets the same image."""
+    from urllib.parse import quote
+    seed = sum(ord(c) for c in name) % 100000
+    prompt = quote(f"professional food photography of {name}, appetizing, "
+                   f"restaurant plating, natural light, high resolution")
+    return (f"https://image.pollinations.ai/prompt/{prompt}"
+            f"?width={width}&height={height}&nologo=true&seed={seed}")
+
+
+def _row_to_recipe(idx: int, row, score: float) -> dict:
+    """Build the recipe payload sent to the app from a DataFrame row."""
+    name = str(row.get('name', 'Unknown'))
+    return {
+        'index': int(idx),
+        'name': name,
+        'score': float(score),
+        'category': str(row.get('category', '')),
+        'cuisine_type': str(row.get('cuisine_type', '')),
+        'servings': int(row.get('servings', 1)) if pd.notna(row.get('servings')) else 1,
+        **dict(zip(
+            ('calories', 'proteins_g', 'carbs_g', 'fats_g'),
+            _parse_nutrition(row.get('nutrition'), row.get('calories', 0))
+        )),
+        'prep_time_min': int(row.get('prep_time_min', 0)) if pd.notna(row.get('prep_time_min')) else 0,
+        'cook_time_min': int(row.get('cook_time_min', 0)) if pd.notna(row.get('cook_time_min')) else 0,
+        'minutes': int(row.get('minutes', 0)) if pd.notna(row.get('minutes')) else 0,
+        'difficulty': str(row.get('difficulty', '')),
+        'ingredients': _parse_list_field(row.get('ingredients', [])),
+        'steps': _parse_list_field(row.get('steps', []), sep='.'),
+        'tags': _parse_list_field(row.get('tags', [])),
+        'image_url': _image_url(name),
+    }
+
+
 def _parse_list_field(value, sep=','):
     """Parse a DataFrame field that may be a Python list, JSON array, or plain string."""
     if isinstance(value, list):
@@ -222,26 +258,8 @@ def recommend_hybrid(ingredients: list, top_k=5, poids_tfidf=0.3, poids_faiss=0.
         results = []
         for idx in top_indices:
             if idx < len(df):
-                row = df.iloc[idx]
-                results.append({
-                    'index': int(idx),
-                    'name': str(row.get('name', 'Unknown')),
-                    'score': float(scores_hybrid[idx]),
-                    'category': str(row.get('category', '')),
-                    'cuisine_type': str(row.get('cuisine_type', '')),
-                    'servings': int(row.get('servings', 1)) if pd.notna(row.get('servings')) else 1,
-                    **dict(zip(
-                        ('calories', 'proteins_g', 'carbs_g', 'fats_g'),
-                        _parse_nutrition(row.get('nutrition'), row.get('calories', 0))
-                    )),
-                    'prep_time_min': int(row.get('prep_time_min', 0)) if pd.notna(row.get('prep_time_min')) else 0,
-                    'cook_time_min': int(row.get('cook_time_min', 0)) if pd.notna(row.get('cook_time_min')) else 0,
-                    'difficulty': str(row.get('difficulty', '')),
-                    'ingredients': _parse_list_field(row.get('ingredients', [])),
-                    'steps': _parse_list_field(row.get('steps', []), sep='.'),
-                    'tags': _parse_list_field(row.get('tags', [])),
-                })
-        
+                results.append(_row_to_recipe(idx, df.iloc[idx], scores_hybrid[idx]))
+
         return results
     except Exception as e:
         logger.error(f"Error in recommend_hybrid: {e}")
@@ -256,6 +274,53 @@ def health():
         'status': 'ok',
         'models_loaded': SYSTEME is not None and FAISS_INDEX is not None
     })
+
+@app.route('/daily', methods=['GET'])
+def daily_recipes():
+    """
+    GET /daily?count=6&date=YYYY-MM-DD&seed=xyz
+    "Recipes of the day": deterministic per date by default; pass a custom
+    seed (e.g. a timestamp) to draw a fresh random batch on refresh.
+    Returns: { "success": true, "date": "...", "recipes": [...] }
+    """
+    try:
+        import random
+        from datetime import date as _date
+
+        if SYSTEME is None:
+            raise Exception("Models not loaded")
+
+        count = request.args.get('count', 6, type=int)
+        count = min(max(count, 1), 24)
+        date_str = request.args.get('date') or _date.today().isoformat()
+        seed = request.args.get('seed') or date_str
+
+        df = SYSTEME['df']
+        rng = random.Random(seed)
+        indices = rng.sample(range(len(df)), count * 3)
+
+        recipes = []
+        for idx in indices:
+            recipe = _row_to_recipe(idx, df.iloc[idx], 1.0)
+            # Keep only complete, displayable recipes
+            if recipe['calories'] > 0 and len(recipe['ingredients']) >= 3 and len(recipe['steps']) >= 2:
+                recipes.append(recipe)
+            if len(recipes) >= count:
+                break
+
+        return jsonify({
+            'success': True,
+            'date': date_str,
+            'recipes': recipes
+        }), 200
+
+    except Exception as e:
+        logger.exception(f"Error in /daily: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Internal recommendation error'
+        }), 500
+
 
 @app.route('/recommend', methods=['POST'])
 def recommend():
@@ -289,10 +354,10 @@ def recommend():
         }), 200
     
     except Exception as e:
-        logger.error(f"Error in /recommend: {e}")
+        logger.exception(f"Error in /recommend: {e}")
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Internal recommendation error'
         }), 500
 
 # ─── Startup ────────────────────────────────────────────────────────────────
@@ -304,7 +369,9 @@ if __name__ == '__main__':
     logger.info("🚀 Starting Recommendation Service...")
     if load_models():
         logger.info("✅ All models loaded successfully")
-        app.run(host='0.0.0.0', port=5001, debug=False)
+        # 127.0.0.1 by default: only the Node backend calls this service and it
+        # has no authentication. Set RECO_HOST=0.0.0.0 explicitly if ever needed.
+        app.run(host=os.environ.get('RECO_HOST', '127.0.0.1'), port=5001, debug=False)
     else:
         logger.error("❌ Failed to load models")
         sys.exit(1)
